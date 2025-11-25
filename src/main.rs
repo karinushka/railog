@@ -79,6 +79,11 @@ enum Commands {
 /// This function parses the command-line arguments and calls the appropriate subcommand.
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    env_logger::Builder::new()
+        .filter_level(if cli.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+        .init();
+
     let preprocessor = LogPreprocessor::new(&cli.patterns_file)?;
     match &cli.command {
         Commands::Train { input_file, output_file, epsilon, min_points } => {

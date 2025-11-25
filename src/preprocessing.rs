@@ -48,3 +48,30 @@ impl LogPreprocessor {
         processed_message
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_preprocess() -> Result<()> {
+        let mut file = NamedTempFile::new()?;
+        writeln!(file, r"\[\d+\]: :: [<PID>]:")?;
+        writeln!(file, r"\b(?:\d{{1,3}}\.){{3}}\d{{1,3}}\b :: <IP>")?;
+        let path = file.path().to_str().unwrap();
+
+        let preprocessor = LogPreprocessor::new(path)?;
+
+        let message1 = "sshd[12345]: Accepted publickey for user from 192.168.1.1 port 22";
+        let expected1 = "sshd[<PID>]: Accepted publickey for user from <IP> port 22";
+        assert_eq!(preprocessor.preprocess(message1), expected1);
+
+        let message2 = "kernel: [67890]: a message";
+        let expected2 = "kernel: [<PID>]: a message";
+        assert_eq!(preprocessor.preprocess(message2), expected2);
+
+        Ok(())
+    }
+}
