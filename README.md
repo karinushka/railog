@@ -8,6 +8,7 @@ The tool is designed with an online learning workflow in mind, allowing the mode
 
 - **Log Message Embedding**: Utilizes the `sentence-transformers/all-MiniLM-L6-v2` model to convert log messages into 384-dimensional vectors.
     - **Pattern Discovery via Clustering**: Employs DBSCAN clustering to group similar log vectors, effectively identifying distinct log patterns.- **Configurable Preprocessing**: Uses a customizable text file (`patterns.txt`) of regular expressions to normalize log messages before analysis (e.g., replacing PIDs, IP addresses with generic tokens like `<PID>` and `<IP>`).
+- **Efficient Ingestion**: The `ingest` command avoids reprocessing log messages by skipping duplicates and logs older than the last model update.
 - **Online Learning Workflow**:
     - **Train**: Create a baseline model of log patterns from a sample file.
     - **Ingest**: Process new logs, automatically updating the model for known patterns and separating unknown ones for review.
@@ -25,6 +26,8 @@ The intended workflow allows the system to continuously learn and adapt to your 
 2.  **Ongoing Ingestion**:
     -   As new logs are generated, collect them into a file (e.g., `new_logs.txt`).
     -   Run the `ingest` command. The tool will:
+        -   Skip log messages that are older than the `centroids.json` file.
+        -   Skip duplicate log messages within the same run.
         -   Update the existing centroids for logs that match known patterns.
         -   Write any non-matching logs to an `unmatched.log` file.
 
@@ -41,6 +44,8 @@ First, build the project using Cargo:
 cargo build --release
 ```
 The executable will be located at `target/release/railog`.
+
+The `--verbose` (`-v`) flag can be used with any command to enable detailed `DEBUG` level logging.
 
 ### 1. `train`
 Creates the initial `centroids.json` file from a sample log file.

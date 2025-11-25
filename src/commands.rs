@@ -1,10 +1,11 @@
+use chrono::{DateTime, Local};
 use crate::embedding::EmbeddingModel;
 use crate::preprocessing::LogPreprocessor;
 use anyhow::{Error as E, Result};
 use dbscan::{Classification, Model};
 use ndarray::{concatenate, Array1, Array2, Axis, s};
 use ndarray_stats::DeviationExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
@@ -28,17 +29,17 @@ fn save_centroids(centroids: &Array2<f32>, path: &str) -> Result<()> {
 ///
 /// * `path` - The path to the log file.
 /// * `preprocessor` - The `LogPreprocessor` to apply to each line.
-/// * `processor` - A closure that takes a preprocessed line and performs an action.
+/// * `processor` - A closure that takes the original and preprocessed line and performs an action.
 fn process_log_file<F>(path: &str, preprocessor: &LogPreprocessor, mut processor: F) -> Result<()>
 where
-    F: FnMut(String) -> Result<()>,
+    F: FnMut(String, String) -> Result<()>,
 {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     for line in reader.lines() {
         let line = line?;
         let preprocessed = preprocessor.preprocess(&line);
-        processor(preprocessed)?;
+        processor(line, preprocessed)?;
     }
     Ok(())
 }
@@ -168,6 +169,7 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
 }
 
 /// Ingests a file of new logs, updating centroids for matches and logging non-matches.
+/// It skips logs older than the centroids file and avoids reprocessing duplicate messages.
 ///
 /// # Arguments
 ///
@@ -177,6 +179,7 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
 /// * `threshold` - The distance threshold for matching a cluster.
 /// * `learning_rate` - The learning rate for updating centroids on a match.
 /// * `preprocessor` - The `LogPreprocessor` to apply to each log message.
+/// * `_verbose` - A boolean flag to enable detailed logging (handled by the logger).
 pub fn ingest(
     input_file: &str,
     centroids_file: &str,
@@ -192,16 +195,36 @@ pub fn ingest(
     let file = File::open(centroids_file)?;
     let mut centroids: Array2<f32> = serde_json::from_reader(file)?;
 
+    let metadata = std::fs::metadata(centroids_file)?;
+    let last_modified: DateTime<Local> = metadata.modified()?.into();
+
     println!("Reading and parsing new log file: {}", input_file);
     let mut unmatched_writer = BufWriter::new(
         OpenOptions::new().create(true).append(true).open(unmatched_file)?
     );
     let mut matched_count = 0;
     let mut total_count = 0;
+    let mut seen_messages = HashSet::new();
 
-    process_log_file(input_file, preprocessor, |message| {
+    process_log_file(input_file, preprocessor, |original_line, preprocessed_message| {
+        let log_timestamp_str = original_line.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+        let log_timestamp = if let Ok(parsed_time) = DateTime::parse_from_str(&format!("{} {}", log_timestamp_str, Local::now().format("%Y")), "%b %d %H:%M:%S %Y") {
+            parsed_time.with_timezone(&Local)
+        } else {
+            // If parsing fails, default to now to process the line
+            Local::now()
+        };
+
+        if log_timestamp < last_modified {
+            return Ok(());
+        }
+
+        if !seen_messages.insert(preprocessed_message.clone()) {
+            return Ok(());
+        }
+
         total_count += 1;
-        let message_embedding_tensor = model.embed(&[&message])?;
+        let message_embedding_tensor = model.embed(&[&preprocessed_message])?;
         let message_vec: Vec<f32> = message_embedding_tensor.flatten_all()?.to_vec1()?;
         let message_array = Array2::from_shape_vec((1, message_vec.len()), message_vec)?;
         let message_embedding = message_array.row(0);
@@ -220,16 +243,16 @@ pub fn ingest(
         if min_dist < threshold {
             matched_count += 1;
             if verbose {
-                println!("'{}' -> Match Cluster {} (distance: {:.4})", message, closest_cluster_index, min_dist);
+                println!("'{}' -> Match Cluster {} (distance: {:.4})", preprocessed_message, closest_cluster_index, min_dist);
             }
             let mut matched_centroid = centroids.slice_mut(s![closest_cluster_index, ..]);
             let update = &(&message_embedding - &matched_centroid) * learning_rate as f32;
             matched_centroid += &update;
         } else {
             if verbose {
-                println!("'{}' -> No match (distance: {:.4})", message, min_dist);
+                println!("'{}' -> No match (distance: {:.4})", preprocessed_message, min_dist);
             }
-            writeln!(unmatched_writer, "{}", message)?;
+            writeln!(unmatched_writer, "{}", preprocessed_message)?;
         }
         Ok(())
     })?;
@@ -262,11 +285,11 @@ pub fn retrain(input_file: &str, centroids_file: &str, preprocessor: &LogPreproc
 
     println!("Reading and parsing new training data from {}", input_file);
     let mut sentences = Vec::new();
-    process_log_file(input_file, preprocessor, |line| {
+    process_log_file(input_file, preprocessor, |_original_line, preprocessed_message| {
         if verbose {
-            println!("Adding new centroid from: '{}'", line);
+            println!("Adding new centroid from: '{}'", preprocessed_message);
         }
-        sentences.push(line);
+        sentences.push(preprocessed_message);
         Ok(())
     })?;
 
@@ -296,7 +319,7 @@ pub fn retrain(input_file: &str, centroids_file: &str, preprocessor: &LogPreproc
 /// Tests the regex patterns on a log file.
 ///
 /// This function is a utility to help with debugging and refining the regex patterns.
-/// It prints the original and preprocessed versions of each line in a log file.
+/// It logs the original and preprocessed versions of each line in a log file.
 ///
 /// # Arguments
 ///
