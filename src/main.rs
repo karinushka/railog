@@ -68,12 +68,6 @@ enum Commands {
     },
 }
 
-
-
-
-
-
-
 /// The main entry point for the application.
 ///
 /// This function parses the command-line arguments and calls the appropriate subcommand.
@@ -81,18 +75,51 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     env_logger::Builder::new()
-        .filter_level(if cli.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+        .filter_level(if cli.verbose {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        })
         .init();
 
     let preprocessor = LogPreprocessor::new(&cli.patterns_file)?;
     match &cli.command {
-        Commands::Train { input_file, output_file, epsilon, min_points } => {
-            train(input_file, output_file, *epsilon, *min_points, &preprocessor, cli.verbose)?;
+        Commands::Train {
+            input_file,
+            output_file,
+            epsilon,
+            min_points,
+        } => {
+            train(
+                input_file,
+                output_file,
+                *epsilon,
+                *min_points,
+                &preprocessor,
+                cli.verbose,
+            )?;
         }
-        Commands::Ingest { input_file, centroids_file, unmatched_file, threshold, learning_rate } => {
-            ingest(input_file, centroids_file, unmatched_file, *threshold, *learning_rate, &preprocessor, cli.verbose)?;
+        Commands::Ingest {
+            input_file,
+            centroids_file,
+            unmatched_file,
+            threshold,
+            learning_rate,
+        } => {
+            ingest(
+                input_file,
+                centroids_file,
+                unmatched_file,
+                *threshold,
+                *learning_rate,
+                &preprocessor,
+                cli.verbose,
+            )?;
         }
-        Commands::Retrain { input_file, centroids_file } => {
+        Commands::Retrain {
+            input_file,
+            centroids_file,
+        } => {
             retrain(input_file, centroids_file, &preprocessor, cli.verbose)?;
         }
         Commands::TestPatterns { input_file } => {
@@ -101,6 +128,3 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
-
-
-    

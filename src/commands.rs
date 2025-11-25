@@ -1,9 +1,9 @@
-use chrono::{DateTime, Local};
 use crate::embedding::EmbeddingModel;
 use crate::preprocessing::LogPreprocessor;
 use anyhow::{Error as E, Result};
+use chrono::{DateTime, Local};
 use dbscan::{Classification, Model};
-use ndarray::{concatenate, Array1, Array2, Axis, s};
+use ndarray::{concatenate, s, Array1, Array2, Axis};
 use ndarray_stats::DeviationExt;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -59,9 +59,16 @@ where
 /// * `preprocessor` - The `LogPreprocessor` to apply to each log message.
 /// * `verbose` - A boolean flag to enable detailed logging.
 use log::{debug, info, warn};
-pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usize, preprocessor: &LogPreprocessor, _verbose: bool) -> Result<()> {
+pub fn train(
+    input_file: &str,
+    output_file: &str,
+    epsilon: f32,
+    min_points: usize,
+    preprocessor: &LogPreprocessor,
+    _verbose: bool,
+) -> Result<()> {
     let mut model = EmbeddingModel::load()?;
-    
+
     const BATCH_SIZE: usize = 1024;
     let mut embedding_batches = Vec::new();
 
@@ -69,7 +76,7 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
     let file = File::open(input_file)?;
     let reader = BufReader::new(file);
     let mut lines_iterator = reader.lines();
-    
+
     loop {
         let mut batch_lines = Vec::with_capacity(BATCH_SIZE);
         for _ in 0..BATCH_SIZE {
@@ -84,10 +91,16 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
             break;
         }
 
-        let batch_preprocessed: Vec<String> = batch_lines.iter().map(|line| preprocessor.preprocess(line)).collect();
+        let batch_preprocessed: Vec<String> = batch_lines
+            .iter()
+            .map(|line| preprocessor.preprocess(line))
+            .collect();
         let batch_str: Vec<&str> = batch_preprocessed.iter().map(|s| s.as_str()).collect();
-        
-        info!("Generating embeddings for batch of {} log messages...", batch_lines.len());
+
+        info!(
+            "Generating embeddings for batch of {} log messages...",
+            batch_lines.len()
+        );
         let embeddings_tensor = model.embed(&batch_str)?;
         let (num_sentences, num_dims) = embeddings_tensor.dims2()?;
         let embeddings_vec: Vec<f32> = embeddings_tensor.flatten_all()?.to_vec1()?;
@@ -102,27 +115,41 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
 
     let embeddings_array = concatenate(
         Axis(0),
-        &embedding_batches.iter().map(|v| v.view()).collect::<Vec<_>>(),
-    ).map_err(|e| E::msg(e.to_string()))?;
+        &embedding_batches
+            .iter()
+            .map(|v| v.view())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| E::msg(e.to_string()))?;
 
     let (_num_sentences, num_dims) = embeddings_array.dim();
 
-    info!("Running DBSCAN clustering with epsilon={} and min_points={}...", epsilon, min_points);
+    info!(
+        "Running DBSCAN clustering with epsilon={} and min_points={}...",
+        epsilon, min_points
+    );
     let dbscan = Model::new(epsilon as f64, min_points);
-    let clusters = dbscan.run(&embeddings_array.outer_iter().map(|row| row.to_vec()).collect::<Vec<_>>());
+    let clusters = dbscan.run(
+        &embeddings_array
+            .outer_iter()
+            .map(|row| row.to_vec())
+            .collect::<Vec<_>>(),
+    );
 
     debug!("--- Cluster Assignments ---");
     let file = File::open(input_file)?;
     let reader = BufReader::new(file);
     for (i, line_result) in reader.lines().enumerate() {
-        if i >= clusters.len() { break; }
+        if i >= clusters.len() {
+            break;
+        }
         let line = line_result?;
         match clusters[i] {
             Classification::Noise => {
-                debug!("'{}' -> Noise", line);
+                debug!("Noise -> {line}");
             }
             Classification::Core(id) | Classification::Edge(id) => {
-                debug!("'{}' -> Cluster {}", line, id);
+                debug!("Cluster {id} -> {line}");
             }
         }
     }
@@ -135,13 +162,18 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
         match cluster_id {
             Classification::Noise => noise_points += 1,
             Classification::Core(id) | Classification::Edge(id) => {
-                cluster_map.entry(id).or_default().push(embeddings_array.row(i).to_owned());
+                cluster_map
+                    .entry(id)
+                    .or_default()
+                    .push(embeddings_array.row(i).to_owned());
             }
         }
     }
 
     if cluster_map.is_empty() {
-        return Err(E::msg("DBSCAN did not find any clusters. Try adjusting epsilon or min_points."));
+        return Err(E::msg(
+            "DBSCAN did not find any clusters. Try adjusting epsilon or min_points.",
+        ));
     }
 
     let mut centroids_list = Vec::new();
@@ -157,12 +189,21 @@ pub fn train(input_file: &str, output_file: &str, epsilon: f32, min_points: usiz
     let centroids = concatenate(
         Axis(0),
         &centroids_list.iter().map(|v| v.view()).collect::<Vec<_>>(),
-    ).map_err(|e| E::msg(e.to_string()))?;
+    )
+    .map_err(|e| E::msg(e.to_string()))?;
 
     save_centroids(&centroids, output_file)?;
 
-    info!("DBSCAN found {} clusters and {} noise points.", centroids.nrows(), noise_points);
-    info!("Successfully saved {} centroids to {}", centroids.nrows(), output_file);
+    info!(
+        "DBSCAN found {} clusters and {} noise points.",
+        centroids.nrows(),
+        noise_points
+    );
+    info!(
+        "Successfully saved {} centroids to {}",
+        centroids.nrows(),
+        output_file
+    );
 
     Ok(())
 }
@@ -199,62 +240,82 @@ pub fn ingest(
 
     info!("Reading and parsing new log file: {}", input_file);
     let mut unmatched_writer = BufWriter::new(
-        OpenOptions::new().create(true).append(true).open(unmatched_file)?
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(unmatched_file)?,
     );
     let mut matched_count = 0;
     let mut total_count = 0;
     let mut seen_messages = HashSet::new();
 
-    process_log_file(input_file, preprocessor, |original_line, preprocessed_message| {
-        let log_timestamp_str = original_line.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
-        let log_timestamp = if let Ok(parsed_time) = DateTime::parse_from_str(&format!("{} {}", log_timestamp_str, Local::now().format("%Y")), "%b %d %H:%M:%S %Y") {
-            parsed_time.with_timezone(&Local)
-        } else {
-            // If parsing fails, default to now to process the line
-            Local::now()
-        };
+    process_log_file(
+        input_file,
+        preprocessor,
+        |original_line, preprocessed_message| {
+            let log_timestamp_str = format!(
+                "{} {} +0100",
+                &original_line[..15],
+                Local::now().format("%Y")
+            );
+            let log_timestamp =
+                DateTime::parse_from_str(&log_timestamp_str, "%b %e %H:%M:%S %Y %z")
+                    .map(|parsed_time| parsed_time.with_timezone(&Local))
+                    .unwrap_or(Local::now());
 
-        if log_timestamp < last_modified {
-            return Ok(());
-        }
-
-        if !seen_messages.insert(preprocessed_message.clone()) {
-            return Ok(());
-        }
-
-        total_count += 1;
-        let message_embedding_tensor = model.embed(&[&preprocessed_message])?;
-        let message_vec: Vec<f32> = message_embedding_tensor.flatten_all()?.to_vec1()?;
-        let message_array = Array2::from_shape_vec((1, message_vec.len()), message_vec)?;
-        let message_embedding = message_array.row(0);
-
-        let mut min_dist = f64::INFINITY;
-        let mut closest_cluster_index = 0;
-
-        for (i, centroid) in centroids.axis_iter(Axis(0)).enumerate() {
-            let dist = centroid.l2_dist(&message_embedding)?;
-            if dist < min_dist {
-                min_dist = dist;
-                closest_cluster_index = i;
+            if log_timestamp < last_modified {
+                debug!("Skipped {log_timestamp} < {last_modified}: {original_line}");
+                return Ok(());
             }
-        }
 
-        if min_dist < threshold {
-            matched_count += 1;
-            debug!("'{}' -> Match Cluster {} (distance: {:.4})", preprocessed_message, closest_cluster_index, min_dist);
-            let mut matched_centroid = centroids.slice_mut(s![closest_cluster_index, ..]);
-            let update = &(&message_embedding - &matched_centroid) * learning_rate as f32;
-            matched_centroid += &update;
-        } else {
-            debug!("'{}' -> No match (distance: {:.4})", preprocessed_message, min_dist);
-            writeln!(unmatched_writer, "{}", preprocessed_message)?;
-        }
-        Ok(())
-    })?;
+            if !seen_messages.insert(preprocessed_message.clone()) {
+                return Ok(());
+            }
+
+            total_count += 1;
+            let message_embedding_tensor = model.embed(&[&preprocessed_message])?;
+            let message_vec: Vec<f32> = message_embedding_tensor.flatten_all()?.to_vec1()?;
+            let message_array = Array2::from_shape_vec((1, message_vec.len()), message_vec)?;
+            let message_embedding = message_array.row(0);
+
+            let mut min_dist = f64::INFINITY;
+            let mut closest_cluster_index = 0;
+
+            for (i, centroid) in centroids.axis_iter(Axis(0)).enumerate() {
+                let dist = centroid.l2_dist(&message_embedding)?;
+                if dist < min_dist {
+                    min_dist = dist;
+                    closest_cluster_index = i;
+                }
+            }
+
+            if min_dist < threshold {
+                matched_count += 1;
+                debug!(
+                    "Match Cluster {} (distance: {:.4}) -> {preprocessed_message}",
+                    closest_cluster_index, min_dist
+                );
+                let mut matched_centroid = centroids.slice_mut(s![closest_cluster_index, ..]);
+                let update = &(&message_embedding - &matched_centroid) * learning_rate as f32;
+                matched_centroid += &update;
+            } else {
+                debug!(
+                    "No match (distance: {:.4}) -> {preprocessed_message}",
+                    min_dist
+                );
+                writeln!(unmatched_writer, "{original_line}")?;
+            }
+            Ok(())
+        },
+    )?;
 
     info!("Ingestion complete.");
     info!("{} messages matched and updated centroids.", matched_count);
-    info!("{} messages did not match and were written to {}.", total_count - matched_count, unmatched_file);
+    info!(
+        "{} messages did not match and were written to {}.",
+        total_count - matched_count,
+        unmatched_file
+    );
 
     save_centroids(&centroids, centroids_file)?;
     info!("Centroids file updated.");
@@ -271,7 +332,12 @@ pub fn ingest(
 /// * `input_file` - The path to the log file to create new centroids from.
 /// * `centroids_file` - The path to the centroids file to update.
 /// * `preprocessor` - The `LogPreprocessor` to apply to each log message.
-pub fn retrain(input_file: &str, centroids_file: &str, preprocessor: &LogPreprocessor, _verbose: bool) -> Result<()> {
+pub fn retrain(
+    input_file: &str,
+    centroids_file: &str,
+    preprocessor: &LogPreprocessor,
+    _verbose: bool,
+) -> Result<()> {
     let mut model = EmbeddingModel::load()?;
 
     info!("Loading existing centroids from {}...", centroids_file);
@@ -280,20 +346,27 @@ pub fn retrain(input_file: &str, centroids_file: &str, preprocessor: &LogPreproc
 
     info!("Reading and parsing new training data from {}", input_file);
     let mut sentences = Vec::new();
-    process_log_file(input_file, preprocessor, |_original_line, preprocessed_message| {
-        debug!("Adding new centroid from: '{}'", preprocessed_message);
-        sentences.push(preprocessed_message);
-        Ok(())
-    })?;
+    process_log_file(
+        input_file,
+        preprocessor,
+        |_original_line, preprocessed_message| {
+            debug!("Adding new centroid from: '{}'", preprocessed_message);
+            sentences.push(preprocessed_message);
+            Ok(())
+        },
+    )?;
 
     if sentences.is_empty() {
         warn!("Input file is empty. No new centroids to add.");
         return Ok(());
     }
-    
+
     let sentences_str: Vec<&str> = sentences.iter().map(|s| s.as_str()).collect();
 
-    info!("Generating embeddings for {} new log messages...", sentences.len());
+    info!(
+        "Generating embeddings for {} new log messages...",
+        sentences.len()
+    );
     let embeddings_tensor = model.embed(&sentences_str)?;
     let (num_sentences, num_dims) = embeddings_tensor.dims2()?;
     let embeddings_vec: Vec<f32> = embeddings_tensor.flatten_all()?.to_vec1()?;
@@ -301,10 +374,14 @@ pub fn retrain(input_file: &str, centroids_file: &str, preprocessor: &LogPreproc
 
     let updated_centroids = concatenate(Axis(0), &[centroids.view(), new_centroids_array.view()])
         .map_err(|e| E::msg(e.to_string()))?;
-    
+
     save_centroids(&updated_centroids, centroids_file)?;
 
-    info!("Successfully added {} new centroids. Total centroids: {}", new_centroids_array.nrows(), updated_centroids.nrows());
+    info!(
+        "Successfully added {} new centroids. Total centroids: {}",
+        new_centroids_array.nrows(),
+        updated_centroids.nrows()
+    );
 
     Ok(())
 }
@@ -325,8 +402,7 @@ pub fn test_patterns(input_file: &str, preprocessor: &LogPreprocessor) -> Result
     for line in reader.lines() {
         let line = line?;
         let preprocessed = preprocessor.preprocess(&line);
-        info!("Original:  '{}'", line);
-        info!("Processed: '{}'\n", preprocessed);
+        println!("{preprocessed}\n");
     }
     Ok(())
 }
